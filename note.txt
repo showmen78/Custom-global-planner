@@ -1,0 +1,10 @@
+cd ~/Desktop/ad_map_test
+source activate.sh
+
+
+cd ~/Desktop/ad_map_test
+
+bash -lc '
+source activate.sh
+python scripts/run_map_test.py
+'

@@ -1,0 +1,11 @@
+# Python dependencies for this project
+#
+# The project otherwise uses only the Python standard library.
+# These two packages are the non-stdlib runtime dependencies.
+
+# Provided by the built `map_repo` install from:
+# https://github.com/carla-simulator/map
+ad-map-access
+
+# Provided by the local CARLA Python API / egg
+carla
