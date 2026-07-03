@@ -1,4 +1,6 @@
 scripts/object_finder.py
+scripts/test.py
+scripts/admap_route_test.py
 .agents/
 .codex/
 slides/

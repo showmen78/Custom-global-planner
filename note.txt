@@ -8,3 +8,11 @@ bash -lc '
 source activate.sh
 python scripts/run_map_test.py
 '
+
+
+
+#vs code terminal
+cd ~/Desktop/Custom_global_planner
+bash -lc 'source activate.sh && python scripts/run_map_test.py'
+
+

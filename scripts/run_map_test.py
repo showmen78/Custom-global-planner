@@ -28,8 +28,8 @@ ROUTE_DRAW_SETTLE_TIME_S = 0.5
 ADJACENT_ROUTE_POINT_INDEX = 5
 CARLA_TO_ENU_Y_SIGN = -1.0
 
-show_carla_route = False
-show_ad_map_route = True
+show_carla_route = True
+show_ad_map_route = not show_carla_route
 
 def run_bridge(arguments):
     """Run the small CARLA bridge script with the given command line args.
@@ -55,7 +55,10 @@ def to_enu_point(location):
     input: `location` (`dict[str, float]`) with `x`, `y`, `z`
     output: ENU point (`ad.map.point.ENUPoint`)
     """
-    return create_enu_point(x=location['x'], y=CARLA_TO_ENU_Y_SIGN * location['y'], z=location['z'])
+    loc = tuple((location['x'], CARLA_TO_ENU_Y_SIGN * location['y'], location['z']))
+
+    #return create_enu_point(x=location['x'], y=CARLA_TO_ENU_Y_SIGN * location['y'], z=location['z'])
+    return create_enu_point(loc)
 
 def to_carla_point(point):
     """Convert one ENU point or point-like value back into CARLA coordinates.
@@ -147,6 +150,10 @@ def main():
     landmarks = get_start_and_goal()
     start_location = landmarks['start']
     goal_location = landmarks['goal']
+#    Start object [CARLA]: position=(28.600, -42.700, 0.600)
+#    Goal object [CARLA]: position=(-103.200, -4.100, 1.100)
+    # start_location = {'x':28.6, 'y': -42.7, 'z': 0.6}
+    # goal_location = {'x': -103.2, 'y': -4.1, 'z': 1.1}
 
     print_carla_point('Loaded start object', start_location)
     print_carla_point('Loaded goal object', goal_location)
@@ -163,25 +170,36 @@ def main():
     lanes = load_xodr_map(XODR_PATH)
     print('Total parsed lanes:', len(lanes))
 
+
+    # multiply -1 with the y value to convert the carla location coordinate to ENU point
     start_point = to_enu_point(start_location)
+    #print('start_point', start_point)
     goal_point = to_enu_point(goal_location)
 
     try:
-        route, start_match, goal_match, route_length_m = find_shortest_route(start_point=start_point, goal_point=goal_point, search_radius=SEARCH_RADIUS_M)
-        route_points = sample_route_centerline(route, start_match=start_match, goal_match=goal_match, spacing=ROUTE_POINT_SPACING_M, start_point=start_point, goal_point=goal_point)
+        route, start_match, goal_match, route_length_m, snapped_start_point, snapped_goal_point = find_shortest_route(start_point=start_point, goal_point=goal_point, search_radius=SEARCH_RADIUS_M)
+        route_points = sample_route_centerline(route, start_match=start_match, goal_match=goal_match, spacing=ROUTE_POINT_SPACING_M, start_point=snapped_start_point, goal_point=snapped_goal_point)
+        print_map_point('Snapped start point', describe_enu_position(snapped_start_point, search_radius=SEARCH_RADIUS_M))
+        print_map_point('Snapped goal point', describe_enu_position(snapped_goal_point, search_radius=SEARCH_RADIUS_M))
         side_point_data = find_adjacent_points(route, start_match, goal_match, route_points, route_point_index=ADJACENT_ROUTE_POINT_INDEX, spacing=ROUTE_POINT_SPACING_M)
         side_points = side_point_data['adjacent_points']
-
+        
+       
+        
         save_route(ADMAP_ROUTE_FILE, to_carla_points(route_points), extra_points=to_carla_points(side_points))
-
+        
         if show_ad_map_route:
+            #this project requires carla to draw
             draw_route(ADMAP_ROUTE_FILE, color='yellow', z_offset=ADMAP_ROUTE_DRAW_Z_OFFSET_M, extra_color='yellow')
+            
             print('AD-map route points:', len(route_points))
             print('AD-map route length:', f'{get_path_length(route_points):.2f} m')
+            
 
         print('\nRoute completed')
         print('Matched start lane:', get_match_lane_id(start_match))
         print('Matched goal lane:', get_match_lane_id(goal_match))
+
         print('Route length:', f'{route_length_m:.2f} m')
         print('Yellow points:', len(route_points))
         print('Adjacent route index used:', side_point_data['selected_route_index'])

@@ -1,8 +1,8 @@
 # Custom_global_planner
 
-This project finds shortest driving route from a raw start object position to a raw goal object position using the AD-map stack. CARLA is only used to read the `start_1` and `goal_1` object positions from the world and to draw the final route back into the simulator.
+This project finds the shortest driving route from a raw start object position to a raw goal object position using the AD-map stack. CARLA is only used to read the `start_1` and `goal_1` object positions from the world and to draw the final route back into the simulator.
 
-The routing logic, lane matching, lane-direction handling, centerline sampling, and adjacent-lane lookup are done outside CARLA with the AD-map libraries.
+The route search, lane matching, lane-direction handling, centerline sampling, and adjacent-lane lookup are done outside CARLA with the AD-map libraries and the custom routing code in this repo.
 
 ## 1. What this project uses
 
@@ -31,12 +31,26 @@ The architecture used in this project is shown below.
 1. CARLA finds the raw positions of `start_1` and `goal_1`.
 2. The OpenDRIVE map is loaded from `maps/Town05.xodr`.
 3. AD-map matches the raw positions to nearby drivable lanes.
-4. AD-map finds the  shortest route.
-5. The route centerline is sampled into points.
-6. Adjacent lane points can also be queried for one route sample.
-7. CARLA draws the final route for visualization.
+4. The matched positions are snapped to lane-center routing points.
+5. A custom shortest-path search uses lane connectivity from `map_repo` to build a legal lane-by-lane route.
+6. Only forward lane continuation and same-direction lane changes are allowed while building the route.
+7. The final lane-consistent route centerline is sampled into points.
+8. Adjacent lane points can also be queried for one route sample.
+9. CARLA draws the final route for visualization.
 
-## 4. Repository layout
+## 4. Recent changes and fixes
+
+These are the main routing changes that were added to fix the wrong-lane and opposite-direction issues:
+
+- Replaced the old final route reconstruction with a custom lane-by-lane search built on top of `map_repo` lane connectivity.
+- Stopped depending on `ad.map.route.planRoute()` for the final shortest-path result.
+- Filtered lane changes so the route can move only to adjacent lanes with the same travel direction.
+- Used the lane direction to decide what “forward” means on each lane, so the route does not travel backward on negative-direction lanes.
+- Snapped routing to lane-center positions so the final path follows the road centerline more like a waypoint-based planner.
+
+
+
+## 5. Repository layout
 
 ```text
 .
@@ -49,20 +63,19 @@ The architecture used in this project is shown below.
 │   ├── carla_bridge.py
 │   ├── carla_global_planner.py
 │   ├── common.py
-│   ├── object_finder.py
 │   └── run_map_test.py
 └── temporary/
 ```
 
-## 5. Main files
+## 6. Main files
 
 - `scripts/run_map_test.py`: main entry point for the routing demo
-- `scripts/admap_route.py`: CARLA-independent AD-map route logic
+- `scripts/admap_route.py`: CARLA-independent AD-map route logic and custom lane-path search
 - `scripts/carla_bridge.py`: reads object positions from CARLA and draws saved route points
 - `scripts/carla_global_planner.py`: optional CARLA global planner comparison path
 - `activate.sh`: activates the AD-map environment and loads the built `map_repo` install
 
-## 6. Requirements
+## 7. Requirements
 
 The code uses only the Python standard library plus these two runtime dependencies:
 
@@ -76,15 +89,15 @@ Notes:
 - `ad_map_access` comes from the built [carla-simulator/map](https://github.com/carla-simulator/map) repo.
 - `carla` comes from the local CARLA Python API / egg in your CARLA installation.
 
-## 7. Before you run
+## 8. Before you run
 
 Make sure these items are ready first:
 
 1. CARLA is installed and the server can run.
 2. The town loaded in CARLA matches the OpenDRIVE map you want to use.
 3. In your map two objects (cube) named `start_1` and `goal_1` are available.
-3. The `map_repo` dependency is built, and `map_repo/install/setup.bash` exists.
-4. The CARLA Python environment exists.
+4. The `map_repo` dependency is built, and `map_repo/install/setup.bash` exists.
+5. The CARLA Python environment exists.
 
 This project currently uses local hard-coded paths, so update them if your machine is different:
 
@@ -94,8 +107,7 @@ This project currently uses local hard-coded paths, so update them if your machi
 - `scripts/carla_bridge.py`
   - `CARLA_ROOT`
 
-
-## 8. How to run this project
+## 9. How to run this project
 
 ### Step 1: Start CARLA
 
@@ -127,12 +139,12 @@ The script will:
 
 1. read the raw `start_1` and `goal_1` object positions
 2. load the OpenDRIVE map
-3. compute the route with AD-map
+3. compute the route with the custom AD-map-based lane search
 4. sample route points
 5. optionally query adjacent lane points
 6. draw the AD-map route in CARLA
 
-## 9. Optional route comparison
+## 10. Optional route comparison
 
 If you want to compare the AD-map result against the CARLA global planner, enable the booleans in `scripts/run_map_test.py`:
 
@@ -146,7 +158,7 @@ When enabled:
 - AD-map route is drawn in yellow
 - CARLA global planner route is drawn in blue
 
-## 10. Example commands
+## 11. Example commands
 
 ```bash
 cd ~/Desktop/Custom_global_planner
@@ -163,13 +175,14 @@ python scripts/run_map_test.py
 '
 ```
 
-## 11. Output
+## 12. Output
 
 During a normal run, the project prints information such as:
 
 - CARLA start and goal object positions
 - number of parsed lanes
 - matched start and goal lane ids
+- snapped start and goal lane information
 - route length
 - number of sampled route points
 - adjacent lane points for the selected route sample
@@ -178,9 +191,17 @@ Temporary JSON outputs are written into the `temporary/` folder.
 
 ![Project output](image/output_screenshot.png)
 
-## 12. Current issues
 
-There are still some known issues in the current version:
 
-1. Sometimes the project does not return a path even when a valid path is available.
-2. Sometimes the route goes in the wrong lane direction or chooses the wrong lane.
+## 13. Important note about shortest-path routing
+
+This project still uses `map_repo` for:
+
+- loading the OpenDRIVE map
+- lane matching
+- lane geometry
+- lane direction
+- lane-to-lane connectivity
+- adjacent lane lookup
+
+But the final shortest-path search is custom in this repo. It does **not** rely on `ad.map.route.planRoute()` for the final path anymore.
