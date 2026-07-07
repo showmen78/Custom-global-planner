@@ -168,20 +168,6 @@ def build_route_candidates(enu_point, search_radius=8.0):
     return candidates
 
 
-def get_nearest_centerline_match(enu_point, search_radius=8.0):
-    """Pick the lane-center point that is closest to the raw point.
-
-    input: `enu_point` (`ad.map.point.ENUPoint`), `search_radius` (`float`)
-    output: best lane match and snapped center point (`tuple[object, ad.map.point.ENUPoint]`)
-    """
-    candidates = build_route_candidates(enu_point, search_radius)
-    if not candidates:
-        raise RuntimeError('No drivable lane found near the requested point.')
-
-    best_candidate = candidates[0]
-    return best_candidate['match'], best_candidate['center_point_enu']
-
-
 def parametric_value_to_float(value):
     """Convert one AD-map parametric value into a normal Python float.
 
@@ -276,6 +262,13 @@ def get_forward_contact_location(lane_id):
     return ad.map.lane.ContactLocation.SUCCESSOR if lane_is_positive(lane_id) else ad.map.lane.ContactLocation.PREDECESSOR
 
 
+def lane_is_intersection(lane_id):
+    """Check whether one lane is marked as an intersection lane by AD-map.
+
+    input: `lane_id` (`int`)
+    output: whether the lane is an intersection lane (`bool`)
+    """
+    return get_lane(lane_id).type == ad.map.lane.LaneType.INTERSECTION
 
 
 def sample_lane_center_at_offset(lane_id, parametric_offset):
@@ -315,7 +308,7 @@ def get_allowed_lane_transitions(lane_id, lane_change_penalty_m=15.0):
         if contact_lane.location == forward_location:
             transitions.append({'to_lane_id': next_lane_id, 'type': 'forward', 'cost_m': get_lane_length_m(next_lane_id)})
             continue
-        if contact_lane.location in (ad.map.lane.ContactLocation.LEFT, ad.map.lane.ContactLocation.RIGHT) and lanes_have_same_direction(lane_id, next_lane_id):
+        if not lane_is_intersection(lane_id) and not lane_is_intersection(next_lane_id) and contact_lane.location in (ad.map.lane.ContactLocation.LEFT, ad.map.lane.ContactLocation.RIGHT) and lanes_have_same_direction(lane_id, next_lane_id):
             transitions.append({'to_lane_id': next_lane_id, 'type': 'lane_change', 'cost_m': lane_change_penalty_m})
 
     return transitions
@@ -380,27 +373,61 @@ def get_lane_segment_length_m(lane_id, start_offset, end_offset):
     return abs(end_offset - start_offset) * get_lane_length_m(lane_id)
 
 
+def advance_offset_forward(lane_id, start_offset, distance_m):
+    """Move one parametric offset forward along the lane by a physical distance.
+
+    input: `lane_id` (`int`), `start_offset` (`float`), `distance_m` (`float`)
+    output: forward-shifted offset on the same lane (`float`)
+    """
+    offset_delta = max(distance_m, 0.0) / max(get_lane_length_m(lane_id), 1e-6)
+    if lane_is_positive(lane_id):
+        return min(1.0, start_offset + offset_delta)
+    return max(0.0, start_offset - offset_delta)
+
+
 def choose_lane_change_offset(lane_id, start_offset, goal_offset=None, lane_change_distance_m=8.0):
-    """Choose a forward point on one lane where the lane change should happen.
-    Decides where along the current lane the lane change should happen.
+    """Choose one forward point on the current lane where the lane change happens.
 
     input: `lane_id` (`int`), `start_offset` (`float`), `goal_offset` (`float | None`), `lane_change_distance_m` (`float`)
     output: chosen lane-change offset (`float`)
     """
     offset_delta = lane_change_distance_m / max(get_lane_length_m(lane_id), lane_change_distance_m)
     if lane_is_positive(lane_id):
-        
-        #min(0.95, ...) stops the lane change from being too close to the very end of the lane.
         lane_change_offset = min(0.95, start_offset + max(offset_delta, (1.0 - start_offset) * 0.35))
-        
         if goal_offset is not None:
             lane_change_offset = min(lane_change_offset, max(start_offset + 0.02, goal_offset - 0.02))
-            
         return lane_change_offset
+
     lane_change_offset = max(0.05, start_offset - max(offset_delta, start_offset * 0.35))
     if goal_offset is not None:
         lane_change_offset = max(lane_change_offset, min(start_offset - 0.02, goal_offset + 0.02))
     return lane_change_offset
+
+
+def choose_lane_change_offsets(lane_id, next_lane_id, start_offset, goal_offset=None, lane_change_distance_m=8.0, use_lateral=False):
+    """Choose where the lane change starts and where it lands on the adjacent lane.
+
+    Most lane changes stay diagonal with a short forward landing shift. For the
+    final approach, the route builder can request a lateral lane change so the
+    connector stays at the same along-lane position.
+
+    input: `lane_id` (`int`), `next_lane_id` (`int`), `start_offset` (`float`), `goal_offset` (`float | None`), `lane_change_distance_m` (`float`), `use_lateral` (`bool`)
+    output: current-lane and target-lane offsets (`tuple[float, float]`)
+    """
+    from_offset = choose_lane_change_offset(lane_id, start_offset, goal_offset, lane_change_distance_m)
+    if use_lateral:
+        return (from_offset, from_offset)
+
+    landing_distance_m = lane_change_distance_m * 0.45
+    to_offset = advance_offset_forward(next_lane_id, from_offset, landing_distance_m)
+
+    if goal_offset is not None:
+        if lane_is_positive(next_lane_id):
+            to_offset = min(to_offset, goal_offset)
+        else:
+            to_offset = max(to_offset, goal_offset)
+
+    return (from_offset, to_offset)
 
 
 def build_custom_route(start_match, goal_match, lane_path, transition_types, lane_change_distance_m=8.0):
@@ -409,12 +436,13 @@ def build_custom_route(start_match, goal_match, lane_path, transition_types, lan
     [
     {'type': 'lane_segment', 'lane_id': 160149, 'start_offset': 0.73, 'end_offset': 1.0},
     {'type': 'lane_segment', 'lane_id': 250149, 'start_offset': 0.0, 'end_offset': 0.45}, #for lane segment 
-    {'type': 'lane_change', 'from_lane_id': 250149, 'to_lane_id': 250148, 'parametric_offset': 0.45}, # for lane change
+    {'type': 'lane_change', 'from_lane_id': 250149, 'to_lane_id': 250148, 'from_offset': 0.45, 'to_offset': 0.51}, # for lane change
     ...
 ]
 
     the lane change happens at one chosen position along the road
-    at that same offset, the code connects the current lane center to the adjacent lane center
+    usually it lands a short distance ahead on the adjacent lane
+    near the end of the route, the last two lane changes stay lateral instead
     
     input: `start_match` (AD-map match object), `goal_match` (AD-map match object), `lane_path` (`list[int]`), `transition_types` (`list[str]`), `lane_change_distance_m` (`float`)
     output: custom route data (`dict[str, object]`)
@@ -425,6 +453,8 @@ def build_custom_route(start_match, goal_match, lane_path, transition_types, lan
     goal_offset = parametric_value_to_float(goal_match.lane_point.para_point.parametric_offset)
     route_steps = []
     current_offset = start_offset
+    lane_change_indices = [index for index, transition_type in enumerate(transition_types) if transition_type == 'lane_change']
+    final_lateral_lane_changes = set(lane_change_indices[-2:])
 
     for index, lane_id in enumerate(lane_path):
         is_last_lane = index == len(lane_path) - 1
@@ -454,15 +484,23 @@ def build_custom_route(start_match, goal_match, lane_path, transition_types, lan
         
         #otherwise if lane change 
         is_goal_lane = index + 1 == len(lane_path) - 1 and next_lane_id == goal_lane_id
-        lane_change_offset = choose_lane_change_offset(lane_id, current_offset, goal_offset if is_goal_lane else None, lane_change_distance_m)
-        
+        use_lateral_lane_change = index in final_lateral_lane_changes
+        lane_change_from_offset, lane_change_to_offset = choose_lane_change_offsets(
+            lane_id,
+            next_lane_id,
+            current_offset,
+            goal_offset if is_goal_lane else None,
+            lane_change_distance_m,
+            use_lateral=use_lateral_lane_change,
+        )
+
         # the lane isn't moving the forward direction
-        if not lane_offsets_move_forward(lane_id, current_offset, lane_change_offset):
+        if not lane_offsets_move_forward(lane_id, current_offset, lane_change_from_offset):
             raise RuntimeError('The selected lane change would move backward on the lane.')
         
-        route_steps.append({'type': 'lane_segment', 'lane_id': lane_id, 'start_offset': current_offset, 'end_offset': lane_change_offset})
-        route_steps.append({'type': 'lane_change', 'from_lane_id': lane_id, 'to_lane_id': next_lane_id, 'parametric_offset': lane_change_offset})
-        current_offset = lane_change_offset
+        route_steps.append({'type': 'lane_segment', 'lane_id': lane_id, 'start_offset': current_offset, 'end_offset': lane_change_from_offset})
+        route_steps.append({'type': 'lane_change', 'from_lane_id': lane_id, 'to_lane_id': next_lane_id, 'from_offset': lane_change_from_offset, 'to_offset': lane_change_to_offset})
+        current_offset = lane_change_to_offset
 
     route_data = {'lane_path': lane_path, 'transition_types': transition_types, 'steps': route_steps, 'start_lane_id': start_lane_id, 'goal_lane_id': goal_lane_id, 'start_offset': start_offset, 'goal_offset': goal_offset}
     route_data['route_length_m'] = get_custom_route_length(route_data)
@@ -482,67 +520,75 @@ def get_custom_route_length(route_data):
             continue
         
         #otherwise in case of lane change
-        start_point = sample_lane_center_at_offset(step['from_lane_id'], step['parametric_offset'])
-        end_point = sample_lane_center_at_offset(step['to_lane_id'], step['parametric_offset'])
+        start_point = sample_lane_center_at_offset(step['from_lane_id'], step['from_offset'])
+        end_point = sample_lane_center_at_offset(step['to_lane_id'], step['to_offset'])
         total_length_m += math.dist(start_point, end_point)
         
     return total_length_m
 
 
+def find_route_from_snapped_matches(start_match, goal_match, lane_change_penalty_m=15.0, lane_change_distance_m=8.0):
+    """Build one legal route between already-snapped start and goal lane matches.
+
+    input: snapped start and goal matches (AD-map match objects), `lane_change_penalty_m` (`float`), `lane_change_distance_m` (`float`)
+    output: route description (`dict[str, object]`)
+    """
+    start_lane_id = get_match_lane_id(start_match)
+    goal_lane_id = get_match_lane_id(goal_match)
+    start_offset = parametric_value_to_float(start_match.lane_point.para_point.parametric_offset)
+    goal_offset = parametric_value_to_float(goal_match.lane_point.para_point.parametric_offset)
+    lane_path, transition_types = find_lane_path(start_lane_id, goal_lane_id, start_offset, goal_offset, lane_change_penalty_m)
+    if lane_path is None or transition_types is None:
+        raise RuntimeError('No legal route exists between the snapped start and goal lanes.')
+
+    return build_custom_route(start_match, goal_match, lane_path, transition_types, lane_change_distance_m)
+
+
 def find_shortest_route(start_point, goal_point, search_radius=2.0, lane_change_penalty_m=15.0, lane_change_distance_m=8.0):
-    """Find the best legal route using AD-map lane connectivity only.
+    """Route between legal start/goal lane candidates while keeping fixed main snap points.
 
     input: `start_point` (`ad.map.point.ENUPoint`), `goal_point` (`ad.map.point.ENUPoint`), `search_radius` (`float`), `lane_change_penalty_m` (`float`), `lane_change_distance_m` (`float`)
-    output: route, start match, goal match, route length, snapped start point, and snapped goal point (`tuple`)
+    output: route, route length, snapped start point, and snapped goal point (`tuple`)
     """
-    
-    #find all the matched lane aroun start and goal point
     start_candidates = build_route_candidates(start_point, search_radius)
     goal_candidates = build_route_candidates(goal_point, search_radius)
-    
     if not start_candidates:
         raise RuntimeError('No drivable lane found near the start point.')
     if not goal_candidates:
         raise RuntimeError('No drivable lane found near the goal point.')
 
-    best_result = None
+    snapped_start_point = start_candidates[0]['center_point_enu']
+    snapped_goal_point = goal_candidates[0]['center_point_enu']
+    best_route = None
     best_score = None
 
-
-    #for every start and goal candidate try to find a route
     for start_candidate in start_candidates:
-        start_match = start_candidate['match']
-        start_lane_id = start_candidate['lane_id']
-        start_offset = parametric_value_to_float(start_match.lane_point.para_point.parametric_offset)
-
         for goal_candidate in goal_candidates:
-            goal_match = goal_candidate['match']
-            goal_lane_id = goal_candidate['lane_id']
-            goal_offset = parametric_value_to_float(goal_match.lane_point.para_point.parametric_offset)
-            
-            #It returns the legal sequence of lanes from the start lane to the goal lane
-            lane_path, transition_types = find_lane_path(start_lane_id, goal_lane_id, start_offset, goal_offset, lane_change_penalty_m)
-            if lane_path is None or transition_types is None:
-                continue
-
             try:
-                #[{'type': 'lane_segment', 'lane_id': 160149, 'start_offset': 0.73, 'end_offset': 1.0}]
-                route_data = build_custom_route(start_match, goal_match, lane_path, transition_types, lane_change_distance_m)
+                route_data = find_route_from_snapped_matches(
+                    start_candidate['match'],
+                    goal_candidate['match'],
+                    lane_change_penalty_m=lane_change_penalty_m,
+                    lane_change_distance_m=lane_change_distance_m,
+                )
             except RuntimeError:
                 continue
 
-            snap_distance_sum = start_candidate['snap_distance'] + goal_candidate['snap_distance']
-            score = (snap_distance_sum, route_data['route_length_m'], not start_candidate['is_in_lane'], 
-                     not goal_candidate['is_in_lane'], -(start_candidate['probability'] + goal_candidate['probability']))
-            
+            score = (
+                start_candidate['snap_distance'] + goal_candidate['snap_distance'],
+                route_data['route_length_m'],
+                not start_candidate['is_in_lane'],
+                not goal_candidate['is_in_lane'],
+                -(start_candidate['probability'] + goal_candidate['probability']),
+            )
             if best_score is None or score < best_score:
                 best_score = score
-                best_result = (route_data, start_match, goal_match, route_data['route_length_m'], start_candidate['center_point_enu'], goal_candidate['center_point_enu'])
+                best_route = route_data
 
-    if best_result is None:
-        raise RuntimeError('No legal route exists between the snapped start and goal lanes.')
-    
-    return best_result
+    if best_route is None:
+        raise RuntimeError('No legal route exists between any nearby start and goal lane candidates.')
+
+    return (best_route, best_route['route_length_m'], snapped_start_point, snapped_goal_point)
 
 def enu_point_to_tuple(point):
     """Convert one AD-map ENU point into a normal Python tuple.
@@ -737,10 +783,10 @@ def append_sampled_point(sampled_points, sampled_point_info, point, lane_id, par
     sampled_point_info.append({'position': point, 'lane_id': lane_id, 'parametric_offset': parametric_offset})
 
 
-def find_adjacent_points(route, start_match, goal_match, route_points, route_point_index=5, spacing=1.0):
+def find_adjacent_points(route, route_points, route_point_index=5):
     """Find nearby same-direction side-lane points around one route sample.
 
-    input: `route` (`dict[str, object]`), `start_match` (AD-map match object), `goal_match` (AD-map match object), `route_points` (`list[tuple[float, float, float]]`), `route_point_index` (`int`), `spacing` (`float`)
+    input: `route` (`dict[str, object]`), `route_points` (`list[tuple[float, float, float]]`), `route_point_index` (`int`)
     output: selected route point and adjacent lane points (`dict`)
     """
     if not route_points:
@@ -760,14 +806,16 @@ def find_adjacent_points(route, start_match, goal_match, route_points, route_poi
     return {'selected_route_index': selected_route_index, 'selected_route_point': route_points[selected_route_index], 'selected_lane_id': selected_lane_id, 'adjacent_points': adjacent_points}
 
 
-def sample_route_centerline(route, start_match, goal_match, spacing=1.0, start_point=None, goal_point=None):
+def sample_route_centerline(route, spacing=1.0, start_point=None, goal_point=None, goal_append_distance_threshold_m=1.0):
     """Sample the final custom route into evenly spaced center points.
 
-    input: `route` (`dict[str, object]`), `start_match` (AD-map match object), `goal_match` (AD-map match object), `spacing` (`float`), `start_point` (`ad.map.point.ENUPoint | None`), `goal_point` (`ad.map.point.ENUPoint | None`)
+    input: `route` (`dict[str, object]`), `spacing` (`float`), `start_point` (`ad.map.point.ENUPoint | None`), `goal_point` (`ad.map.point.ENUPoint | None`), `goal_append_distance_threshold_m` (`float`)
     output: sampled route points (`list[tuple[float, float, float]]`)
     """
     if spacing <= 0.0:
         raise ValueError('Route-point spacing must be greater than zero.')
+    if goal_append_distance_threshold_m < 0.0:
+        raise ValueError('Goal append distance threshold must be zero or greater.')
 
     sampled_points = []
     sampled_point_info = []
@@ -777,10 +825,10 @@ def sample_route_centerline(route, start_match, goal_match, spacing=1.0, start_p
                 append_sampled_point(sampled_points, sampled_point_info, sample_lane_center_at_offset(step['lane_id'], parametric_offset), step['lane_id'], parametric_offset)
             continue
 
-        connector_start_point = sample_lane_center_at_offset(step['from_lane_id'], step['parametric_offset'])
-        connector_end_point = sample_lane_center_at_offset(step['to_lane_id'], step['parametric_offset'])
+        connector_start_point = sample_lane_center_at_offset(step['from_lane_id'], step['from_offset'])
+        connector_end_point = sample_lane_center_at_offset(step['to_lane_id'], step['to_offset'])
         for connector_point in interpolate_points(connector_start_point, connector_end_point, spacing):
-            append_sampled_point(sampled_points, sampled_point_info, connector_point, step['to_lane_id'], step['parametric_offset'])
+            append_sampled_point(sampled_points, sampled_point_info, connector_point, step['to_lane_id'], step['to_offset'])
 
     if start_point is not None:
         start_tuple = enu_point_to_tuple(start_point)
@@ -789,7 +837,7 @@ def sample_route_centerline(route, start_match, goal_match, spacing=1.0, start_p
             sampled_point_info.insert(0, {'position': start_tuple, 'lane_id': route['start_lane_id'], 'parametric_offset': route['start_offset']})
     if goal_point is not None:
         goal_tuple = enu_point_to_tuple(goal_point)
-        if not sampled_points or not points_are_close(sampled_points[-1], goal_tuple):
+        if not sampled_points or math.dist(sampled_points[-1], goal_tuple) > goal_append_distance_threshold_m:
             sampled_points.append(goal_tuple)
             sampled_point_info.append({'position': goal_tuple, 'lane_id': route['goal_lane_id'], 'parametric_offset': route['goal_offset']})
 

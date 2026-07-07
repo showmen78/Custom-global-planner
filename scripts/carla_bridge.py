@@ -136,14 +136,20 @@ def get_name(item):
         return attributes.get('role_name') or attributes.get('name') or getattr(item, 'type_id', str(item.id))
     return getattr(item, 'name', str(item.id))
 
-def object_to_dict(item):
+def object_to_dict(item, world_map=None):
     """Turn one CARLA object into a plain position dictionary.
 
-    input: `item` (`carla.EnvironmentObject | carla.Actor`)
+    input: `item` (`carla.EnvironmentObject | carla.Actor`), `world_map` (`carla.Map | None`)
     output: object data (`dict[str, str | float]`)
     """
     location = get_location(item)
-    return {'name': str(get_name(item)), 'x': float(location.x), 'y': float(location.y), 'z': float(location.z)}
+    point = {'name': str(get_name(item)), 'x': float(location.x), 'y': float(location.y), 'z': float(location.z)}
+    if world_map is not None:
+        waypoint = world_map.get_waypoint(location, project_to_road=True)
+        if waypoint is not None:
+            point['road_id'] = int(waypoint.road_id)
+            point['lane_id'] = int(waypoint.lane_id)
+    return point
 
 def get_start_and_goal(world, start_name, goal_name):
     """Read the raw positions of the chosen start and goal objects.
@@ -151,7 +157,11 @@ def get_start_and_goal(world, start_name, goal_name):
     input: `world` (`carla.World`), `start_name` (`str`), `goal_name` (`str`)
     output: start and goal data (`dict[str, dict[str, float | str]]`)
     """
-    return {'start': object_to_dict(find_object(world, start_name)), 'goal': object_to_dict(find_object(world, goal_name))}
+    world_map = world.get_map()
+    return {
+        'start': object_to_dict(find_object(world, start_name), world_map=world_map),
+        'goal': object_to_dict(find_object(world, goal_name), world_map=world_map),
+    }
 
 def get_color(carla, color_name):
     """Map a simple color name to a CARLA debug color.
@@ -159,7 +169,7 @@ def get_color(carla, color_name):
     input: `carla` (`module`), `color_name` (`str`)
     output: debug color (`carla.Color`)
     """
-    colors = {'yellow': carla.Color(r=255, g=255, b=0), 'red': carla.Color(r=255, g=0, b=0), 'blue': carla.Color(r=0, g=120, b=255)}
+    colors = {'yellow': carla.Color(r=255, g=255, b=0), 'red': carla.Color(r=255, g=0, b=0), 'blue': carla.Color(r=0, g=120, b=255), 'green': carla.Color(r=0, g=255, b=0)}
     try:
         return colors[color_name]
     except KeyError as error:

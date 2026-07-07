@@ -16,3 +16,20 @@ cd ~/Desktop/Custom_global_planner
 bash -lc 'source activate.sh && python scripts/run_map_test.py'
 
 
+
+
+data and plots needed
+
+1st plot (3 graph in a single plot): 
+
+1. total parsed lanes vs only map parsing time
+2. total parsed lanes vs only shortest route generation time 
+3. total parsed lanes vs total time (parsing + shortest path generation)
+
+
+
+2nd plot: 
+1. total routable lanes vs only shortest route generation time 
+
+3rd plot:
+1. lane connections vs only shortest route generation time 
