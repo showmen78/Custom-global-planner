@@ -38,7 +38,22 @@ The architecture used in this project is shown below.
 8. Adjacent lane points can also be queried for one route sample.
 9. CARLA draws the final route for visualization.
 
-## 4. Recent changes and fixes
+## 4. Route cost model
+
+The custom global planner uses a lane-level graph search with a simple custom cost design.
+
+- Forward movement cost = length of the next lane
+- Lane-change cost = fixed `LANE_CHANGE_PENALTY`
+- Illegal moves are ignored from the graph
+- Lane changes inside intersection lanes are blocked
+
+The current movement-cost summary is shown below.
+
+![Route cost table](image/table_image.png)
+
+In practice, this means the planner prefers shorter legal forward progress, while lane changes are only taken when their fixed penalty still leads to a lower total route cost.
+
+## 5. Recent changes and fixes
 
 These are the main routing changes that were added to fix the wrong-lane and opposite-direction issues:
 
@@ -50,7 +65,7 @@ These are the main routing changes that were added to fix the wrong-lane and opp
 
 
 
-## 5. Repository layout
+## 6. Repository layout
 
 ```text
 .
@@ -67,7 +82,7 @@ These are the main routing changes that were added to fix the wrong-lane and opp
 └── temporary/
 ```
 
-## 6. Main files
+## 7. Main files
 
 - `scripts/run_map_test.py`: main entry point for the routing demo
 - `scripts/admap_route.py`: CARLA-independent AD-map route logic and custom lane-path search
@@ -75,7 +90,7 @@ These are the main routing changes that were added to fix the wrong-lane and opp
 - `scripts/carla_global_planner.py`: optional CARLA global planner comparison path
 - `activate.sh`: activates the AD-map environment and loads the built `map_repo` install
 
-## 7. Requirements
+## 8. Requirements
 
 The code uses only the Python standard library plus these two runtime dependencies:
 
@@ -89,7 +104,7 @@ Notes:
 - `ad_map_access` comes from the built [carla-simulator/map](https://github.com/carla-simulator/map) repo.
 - `carla` comes from the local CARLA Python API / egg in your CARLA installation.
 
-## 8. Before you run
+## 9. Before you run
 
 Make sure these items are ready first:
 
@@ -107,7 +122,7 @@ This project currently uses local hard-coded paths, so update them if your machi
 - `scripts/carla_bridge.py`
   - `CARLA_ROOT`
 
-## 9. How to run this project
+## 10. How to run this project
 
 ### Step 1: Start CARLA
 
@@ -144,7 +159,7 @@ The script will:
 5. optionally query adjacent lane points
 6. draw the AD-map route in CARLA
 
-## 10. Optional route comparison
+## 11. Optional route comparison
 
 If you want to compare the AD-map result against the CARLA global planner, enable the booleans in `scripts/run_map_test.py`:
 
@@ -158,7 +173,7 @@ When enabled:
 - AD-map route is drawn in yellow
 - CARLA global planner route is drawn in blue
 
-## 11. Example commands
+## 12. Example commands
 
 ```bash
 cd ~/Desktop/Custom_global_planner
@@ -175,7 +190,7 @@ python scripts/run_map_test.py
 '
 ```
 
-## 12. Output
+## 13. Output
 
 During a normal run, the project prints information such as:
 
@@ -193,7 +208,7 @@ Temporary JSON outputs are written into the `temporary/` folder.
 
 
 
-## 13. Important note about shortest-path routing
+## 14. Important note about shortest-path routing
 
 This project still uses `map_repo` for:
 
