@@ -1,0 +1,3 @@
+[ADMap]
+map=Town04.xodr
+open_drive_overlap_margin=0.2
