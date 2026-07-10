@@ -36,16 +36,40 @@ def load_carla():
     import carla
     return carla
 
-def connect_to_carla(carla, host='127.0.0.1', port=2000, timeout=20.0):
-    """Connect to the running CARLA server and return the world handle.
+def connect_to_carla(carla, host='127.0.0.1', port=2000, timeout=20.0, ready_timeout=120.0, retry_interval=1.0):
+    """Connect to the running CARLA server and wait until the world is ready.
 
-    input: `carla` (`module`), `host` (`str`), `port` (`int`), `timeout` (`float`)
+    input: `carla` (`module`), `host` (`str`), `port` (`int`), `timeout` (`float`), `ready_timeout` (`float`), `retry_interval` (`float`)
     output: client and world (`tuple[carla.Client, carla.World]`)
     """
     client = carla.Client(host, port)
     client.set_timeout(timeout)
-    world = client.get_world()
-    return (client, world)
+    start_time = time.monotonic()
+    last_error = None
+    
+    print('====================================connecting to carla ===========================')
+
+    while (time.monotonic() - start_time) < ready_timeout:
+        try:
+            world = client.get_world()
+            world.get_actors()
+            return (client, world)
+        except RuntimeError as error:
+            last_error = error
+            time.sleep(retry_interval)
+
+    raise RuntimeError(f'Timed out after {ready_timeout:.0f}s while waiting for the simulator at {host}:{port}. Last error: {last_error}')
+
+def try_get_world_map(world):
+    """Try to read the CARLA map without failing the whole bridge.
+
+    input: `world` (`carla.World`)
+    output: world map or nothing (`carla.Map | None`)
+    """
+    try:
+        return world.get_map()
+    except RuntimeError:
+        return None
 
 def clean_name(name):
     """Make CARLA object names easier to match.
@@ -63,6 +87,7 @@ def get_actor_names(actor):
     input: `actor` (`carla.Actor`)
     output: possible names (`set[str]`)
     """
+    print("======================================= got actor name===========================================")
     names = set()
     attributes = dict(getattr(actor, 'attributes', {}))
     for key in ('id', 'role_name', 'name'):
@@ -96,6 +121,7 @@ def find_object(world, wanted_name):
     input: `world` (`carla.World`), `wanted_name` (`str`)
     output: one object handle (`carla.EnvironmentObject | carla.Actor`)
     """
+    print('================================= find object =========================================')
     wanted_name = clean_name(wanted_name)
     objects = list(world.get_environment_objects())
     exact_matches = [obj for obj in objects if clean_name(obj.name) == wanted_name]
@@ -151,13 +177,14 @@ def object_to_dict(item, world_map=None):
             point['lane_id'] = int(waypoint.lane_id)
     return point
 
-def get_start_and_goal(world, start_name, goal_name):
+def get_start_and_goal(world, start_name, goal_name, world_map=None):
     """Read the raw positions of the chosen start and goal objects.
 
-    input: `world` (`carla.World`), `start_name` (`str`), `goal_name` (`str`)
+    input: `world` (`carla.World`), `start_name` (`str`), `goal_name` (`str`), `world_map` (`carla.Map | None`)
     output: start and goal data (`dict[str, dict[str, float | str]]`)
     """
-    world_map = world.get_map()
+    if world_map is None:
+        world_map = try_get_world_map(world)
     return {
         'start': object_to_dict(find_object(world, start_name), world_map=world_map),
         'goal': object_to_dict(find_object(world, goal_name), world_map=world_map),
@@ -233,11 +260,15 @@ def handle_get_objects(args):
     """
     carla = load_carla()
     _, world = connect_to_carla(carla, host=args.host, port=args.port)
-  
-    landmarks = get_start_and_goal(world, args.start_name, args.goal_name)
+
+    world_map = try_get_world_map(world)
+    landmarks = get_start_and_goal(world, args.start_name, args.goal_name, world_map=world_map)
     draw_points(carla=carla, world=world, points=[landmarks['start'], landmarks['goal']], color=carla.Color(r=255, g=0, b=0))
     write_json(args.output, landmarks)
-    print('CARLA map:', world.get_map().name)
+    if world_map is not None:
+        print('CARLA map:', world_map.name)
+    else:
+        print('CARLA map: unavailable (server OpenDRIVE lookup failed; using object positions only)')
     print_carla_point('Start object', landmarks['start'])
     print_carla_point('Goal object', landmarks['goal'])
 

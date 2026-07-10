@@ -8,7 +8,7 @@ from admap_route import close_map, create_enu_point, describe_enu_position, enu_
 from common import clean_number, get_path_length, point_to_tuple, read_json, write_json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-XODR_PATH = PROJECT_ROOT / 'maps' / 'Town07.xodr'
+XODR_PATH = PROJECT_ROOT / 'maps' / 'Town10HD_Opt.xodr'
 CARLA_BRIDGE = PROJECT_ROOT / 'scripts' / 'carla_bridge.py'
 CARLA_PYTHON = Path('/home/umd-user/miniconda3/envs/carla_env/bin/python')
 TEMP_DIRECTORY = PROJECT_ROOT / 'temporary'
@@ -44,7 +44,15 @@ def run_bridge(arguments, quiet=True):
     output: none (`None`)
     """
     command = [str(CARLA_PYTHON), str(CARLA_BRIDGE)] + arguments
-    subprocess.run(command, check=True, capture_output=quiet, text=True)
+    try:
+        subprocess.run(command, check=True, capture_output=quiet, text=True)
+    except subprocess.CalledProcessError as error:
+        message_lines = ['CARLA bridge failed.']
+        if error.stdout:
+            message_lines.append(error.stdout.strip())
+        if error.stderr:
+            message_lines.append(error.stderr.strip())
+        raise RuntimeError('\n'.join((line for line in message_lines if line))) from error
 
 def get_start_and_goal():
     """Read the raw `start_1` and `goal_1` object positions from CARLA.
@@ -52,7 +60,12 @@ def get_start_and_goal():
     input: none (`None`)
     output: start and goal data (`dict[str, dict[str, float | str]]`)
     """
+    
+    #print('===========================get stat and goal ====================================')
     run_bridge(['get-objects', '--start-name', 'start_1', '--goal-name', 'goal_1', '--output', str(LANDMARKS_FILE)])
+    print('='*10)
+    print(LANDMARKS_FILE)
+    print('='*10)
     return read_json(LANDMARKS_FILE)
 
 def to_enu_point(location):
@@ -114,7 +127,13 @@ def get_carla_route(start_location, goal_location):
         print(f'\nSkipping CARLA global route: {error}')
         return None
     try:
-        return find_carla_shortest_path(start_location=start_location, goal_location=goal_location, sampling_resolution=ROUTE_SAMPLING_RESOLUTION_M, python_executable=CARLA_PYTHON)
+        return find_carla_shortest_path(
+            start_location=start_location,
+            goal_location=goal_location,
+            sampling_resolution=ROUTE_SAMPLING_RESOLUTION_M,
+            python_executable=CARLA_PYTHON,
+            xodr_path=XODR_PATH,
+        )
     except Exception as error:
         print(f'\nSkipping CARLA global route: {error}')
         return None
