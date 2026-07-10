@@ -6,5 +6,7 @@ scripts/admap_route_test.py
 slides/
 q_n_a.txt
 temporary/
+cache/
+__pycache__/
+global_planner/__pycache__/
 note.txt
-
